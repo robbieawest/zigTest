@@ -59,16 +59,31 @@ pub fn assertSlices(a: anytype, b: anytype, label: []const u8) TestingError!void
 
 fn assertSlicesInner(comptime T: type, a: []const T, b: []const T, label: []const u8) TestingError!void {
     //ToDo implement iterative checker with std.meta.eql
-    if (std.mem.eql(T, a, b)) {
-        const expected_fail_message = printSliceToString(T, a) catch {
-            println("error at expected", .{});
-            return TestingError.FailureWhileTesting;
-        };
-        println("expected_message: {s}", .{expected_fail_message});
-        const actual_fail_message = printSliceToString(T, b) catch return TestingError.FailureWhileTesting;
-        println("actual_message: {s}", .{actual_fail_message});
-        println(TEST_FAIL_FMT ++ "Splices not equal. Expected: {s}, Actual: {s}", .{ label, expected_fail_message, actual_fail_message });
+    if (!std.mem.eql(T, a, b)) {
+        const expected_string = printSliceToString(T, a) catch return TestingError.FailureWhileTesting;
+        const actual_string = printSliceToString(T, b) catch return TestingError.FailureWhileTesting;
+        defer allocator.free(expected_string);
+        defer allocator.free(actual_string);
+
+        var differences = std.ArrayList(Difference).init(allocator);
+        getSpliceDifferences(T, a, b, &differences) catch return TestingError.FailureWhileTesting;
+
+        println(TEST_FAIL_FMT ++ "Splices not equal.\n\tExpected: {s}\n\tActual:   {s}", .{ label, expected_string, actual_string });
+
         return TestingError.AssertionError;
+    }
+}
+
+const Difference = struct { index: usize, expected_value: ?u8, actual_value: ?u8 };
+
+fn getSpliceDifferences(comptime T: type, a: []const T, b: []const T, differences: *std.ArrayList(Difference)) !void {
+    const maxLength = if (a.len > b.len) a.len else b.len;
+
+    for (0..maxLength) |i| {
+        const potentialDifference: Difference = Difference{ .index = i, .expected_value = if (i < a.len) a[i] else null, .actual_value = if (i < b.len) b[i] else null };
+
+        if (!std.meta.eql(potentialDifference.expected_value, potentialDifference.actual_value))
+            try differences.append(potentialDifference);
     }
 }
 
@@ -76,16 +91,17 @@ fn printSliceToString(comptime T: type, a: []const T) ![]const u8 {
     var strList = std.ArrayList(u8).init(allocator);
     defer strList.deinit();
 
-    try strList.ensureTotalCapacity(a.len);
+    try strList.ensureTotalCapacity(a.len * 3 + 1);
     try strList.appendSlice("[ ");
-    for (0..a.len) |i| {
-        try std.fmt.format(strList.writer(), "{c}, ", .{a[i]});
-        println("'{s}'", .{strList.items});
-    }
+    for (a) |entry|
+        try std.fmt.format(strList.writer(), "{c}, ", .{entry});
+
     strList.replaceRangeAssumeCapacity(strList.items.len - 2, 2, &[0]u8{});
     try strList.appendSlice(" ]");
-    println("strList at end: {s}", .{strList.items});
-    return strList.items;
+
+    const ret = try allocator.alloc(u8, strList.items.len);
+    std.mem.copyForwards(u8, ret, strList.items);
+    return ret;
 }
 
 test "assertEquals_test" {
@@ -109,7 +125,7 @@ test "assertEquals_slice" {
 
     try y.appendSlice("Hello ");
     try y.appendSlice(yar);
-    try y.appendSlice("ld!");
+    //try y.appendSlice("ld!");
 
     try assertEquals(x, y.items, "Splices test");
 }
