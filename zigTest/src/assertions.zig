@@ -12,6 +12,12 @@ var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
 const TestingError = error{ AssertionError, FailureWhileTesting, TypeNotSupported };
+fn catchTestingErr(err: anyerror) TestingError {
+    return switch (err) {
+        error.AssertionError, error.TypeNotSupported => |capError| capError,
+        else => TestingError.FailureWhileTesting,
+    };
+}
 
 pub fn assertEquals(a: anytype, b: anytype, label: []const u8) TestingError!void {
     const T: type = @TypeOf(a, b);
@@ -37,14 +43,14 @@ fn assertEqualsInner(comptime T: type, a: T, b: T, label: []const u8) TestingErr
         },
         .Pointer => |pointer| blk: {
             switch (pointer.size) {
-                .Slice => break :blk try assertSlicesInner(pointer.child, a, b, label),
+                .Slice => break :blk assertSlicesInner(pointer.child, a, b, label) catch |err| return catchTestingErr(err),
                 else => |size| {
                     printerr("Pointer type not suppored: {any}, Size: {any}, Child: {any}.", .{ label, T, size, pointer.child });
                     break :blk TestingError.TypeNotSupported;
                 },
             }
         },
-        .Array => |arrType| try assertSlicesInner(arrType.child, a, b),
+        .Array => |arrType| assertSlicesInner(arrType.child, a, b) catch |err| return catchTestingErr(err),
         else => blk: {
             printerr("Type not supported: {any}.", .{ label, T });
             break :blk TestingError.TypeNotSupported;
@@ -57,25 +63,25 @@ pub fn assertSlices(a: anytype, b: anytype, label: []const u8) TestingError!void
     try assertSlicesInner(T.child, &a, &b, label);
 }
 
-fn assertSlicesInner(comptime T: type, a: []const T, b: []const T, label: []const u8) TestingError!void {
+fn assertSlicesInner(comptime T: type, a: []const T, b: []const T, label: []const u8) !void {
     //Todo return generic error union from this and then parse it later as TestingError, no point doing it here since this is private
 
     if (!std.mem.eql(T, a, b)) {
-        const expected_string = printSliceToString(T, a) catch return TestingError.FailureWhileTesting;
-        const actual_string = printSliceToString(T, b) catch return TestingError.FailureWhileTesting;
+        const expected_string = try printSliceToString(T, a);
+        const actual_string = try printSliceToString(T, b);
         defer allocator.free(expected_string);
         defer allocator.free(actual_string);
 
         var differences = std.ArrayList(Difference).init(allocator);
         defer differences.deinit();
-        getSliceDifferences(T, a, b, &differences) catch return TestingError.FailureWhileTesting;
+        try getSliceDifferences(T, a, b, &differences);
 
         printerr("Slices not equal.\n\tExpected: {s}\n\tActual:   {s}", .{ label, expected_string, actual_string });
 
         var differencesToString = std.ArrayList(u8).init(allocator);
         defer differencesToString.deinit();
-        differencesToString.appendSlice("Differences found within slices.") catch return TestingError.FailureWhileTesting;
-        for (differences.items) |*difference| difference.outAfterList(&differencesToString) catch return TestingError.FailureWhileTesting;
+        try differencesToString.appendSlice("Differences found within slices.");
+        for (differences.items) |*difference| try difference.outAfterList(&differencesToString);
 
         println("{s}", .{differencesToString.items});
 
