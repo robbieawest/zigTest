@@ -72,11 +72,12 @@ fn assertSlicesInner(comptime T: type, a: []const T, b: []const T, label: []cons
         defer allocator.free(expected_string);
         defer allocator.free(actual_string);
 
+        const indexes = try Difference.outIndexes(T, a, b);
+        printerr("Slices not equal.\n{s}\n\tExpected: {s}\n\tActual:   {s}", .{ label, indexes, expected_string, actual_string });
+
         var differences = std.ArrayList(Difference).init(allocator);
         defer differences.deinit();
         try getSliceDifferences(T, a, b, &differences);
-
-        printerr("Slices not equal.\n\tExpected: {s}\n\tActual:   {s}", .{ label, expected_string, actual_string });
 
         var differencesToString = std.ArrayList(u8).init(allocator);
         defer differencesToString.deinit();
@@ -93,6 +94,41 @@ const Difference = struct {
     index: u8,
     expected_value: ?u8,
     actual_value: ?u8,
+
+    fn outIndexes(comptime T: type, a: []const T, b: []const T) ![]u8 {
+        const maxLength: u8 = if (a.len > b.len) @intCast(a.len) else @intCast(b.len);
+
+        var indexesOut = std.ArrayList(u8).init(allocator);
+        defer indexesOut.deinit();
+
+        try indexesOut.ensureTotalCapacity(a.len * 3 + 2);
+        if (maxLength >= 100)
+            try indexesOut.appendSlice("\tIndexes may be rendered incorrectly due to large index counts\n");
+        try indexesOut.appendSlice("\tIndexes:    ");
+
+        var lastSpaceLen: u8 = 2;
+        for (0..maxLength) |i| {
+            const index: u8 = @intCast(i);
+            var spaces = std.ArrayList(u8).init(allocator);
+            defer spaces.deinit();
+
+            if (index <= 9) {
+                try spaces.appendSlice("  ");
+                lastSpaceLen = 2;
+            } else if (index <= 99) {
+                try spaces.appendSlice(" ");
+                lastSpaceLen = 1;
+            } else lastSpaceLen = 0;
+
+            try std.fmt.format(indexesOut.writer(), "{d}{s}", .{ index, spaces.items });
+        }
+        indexesOut.replaceRangeAssumeCapacity(indexesOut.items.len - lastSpaceLen, lastSpaceLen, &[0]u8{});
+        try indexesOut.appendSlice("  ");
+
+        const ret = try allocator.alloc(u8, indexesOut.items.len);
+        std.mem.copyForwards(u8, ret, indexesOut.items);
+        return ret;
+    }
 
     fn outAfterList(self: *Difference, list: *std.ArrayList(u8)) !void {
         var expected_out = std.ArrayList(u8).init(allocator);
@@ -129,7 +165,7 @@ fn printSliceToString(comptime T: type, a: []const T) ![]const u8 {
     var strList = std.ArrayList(u8).init(allocator);
     defer strList.deinit();
 
-    try strList.ensureTotalCapacity(a.len * 3 + 1);
+    try strList.ensureTotalCapacity(a.len * 3 + 2);
     try strList.appendSlice("[ ");
     for (a) |entry|
         try std.fmt.format(strList.writer(), "{c}, ", .{entry});
@@ -163,7 +199,7 @@ test "assertEquals_slice" {
 
     try y.appendSlice("Hello ");
     try y.appendSlice(yar);
-    //try y.appendSlice("ld!");
+    try y.appendSlice("dd!");
 
     try assertEquals(x, y.items, "Slices test");
 }
