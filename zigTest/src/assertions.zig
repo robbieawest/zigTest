@@ -1,16 +1,17 @@
 const std = @import("std");
 
-//untested
-
 fn println(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print("\n" ++ fmt ++ "\n\n", args);
+    std.debug.print(fmt ++ "\n\n", args);
+}
+
+fn printerr(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print("\nTest '{s}' failed.\n  Error: >> " ++ fmt ++ "\n\n", args);
 }
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
 const TestingError = error{ AssertionError, FailureWhileTesting, TypeNotSupported };
-const TEST_FAIL_FMT = "Test '{s}' failed.\n  Error: >> ";
 
 pub fn assertEquals(a: anytype, b: anytype, label: []const u8) TestingError!void {
     const T: type = @TypeOf(a, b);
@@ -18,7 +19,6 @@ pub fn assertEquals(a: anytype, b: anytype, label: []const u8) TestingError!void
 }
 
 fn assertEqualsInner(comptime T: type, a: T, b: T, label: []const u8) TestingError!void {
-    println("{any}", .{@typeInfo(@TypeOf(a))});
     return switch (@typeInfo(@TypeOf(b))) {
         .Bool,
         .Int,
@@ -31,7 +31,7 @@ fn assertEqualsInner(comptime T: type, a: T, b: T, label: []const u8) TestingErr
         .ErrorSet,
         => blk: {
             if (a != b) {
-                println(TEST_FAIL_FMT ++ "Expected {any} found {any}", .{ label, a, b });
+                printerr("Expected {any} found {any}", .{ label, a, b });
                 break :blk TestingError.AssertionError;
             }
         },
@@ -39,14 +39,14 @@ fn assertEqualsInner(comptime T: type, a: T, b: T, label: []const u8) TestingErr
             switch (pointer.size) {
                 .Slice => break :blk try assertSlicesInner(pointer.child, a, b, label),
                 else => |size| {
-                    println(TEST_FAIL_FMT ++ "Pointer type not suppored: {any}, Size: {any}, Child: {any}.", .{ label, T, size, pointer.child });
+                    printerr("Pointer type not suppored: {any}, Size: {any}, Child: {any}.", .{ label, T, size, pointer.child });
                     break :blk TestingError.TypeNotSupported;
                 },
             }
         },
         .Array => |arrType| try assertSlicesInner(arrType.child, a, b),
         else => blk: {
-            println(TEST_FAIL_FMT ++ "Type not supported: {any}.", .{ label, T });
+            printerr("Type not supported: {any}.", .{ label, T });
             break :blk TestingError.TypeNotSupported;
         },
     };
@@ -58,7 +58,8 @@ pub fn assertSlices(a: anytype, b: anytype, label: []const u8) TestingError!void
 }
 
 fn assertSlicesInner(comptime T: type, a: []const T, b: []const T, label: []const u8) TestingError!void {
-    //ToDo implement iterative checker with std.meta.eql
+    //Todo return generic error union from this and then parse it later as TestingError, no point doing it here since this is private
+
     if (!std.mem.eql(T, a, b)) {
         const expected_string = printSliceToString(T, a) catch return TestingError.FailureWhileTesting;
         const actual_string = printSliceToString(T, b) catch return TestingError.FailureWhileTesting;
@@ -66,21 +67,52 @@ fn assertSlicesInner(comptime T: type, a: []const T, b: []const T, label: []cons
         defer allocator.free(actual_string);
 
         var differences = std.ArrayList(Difference).init(allocator);
-        getSpliceDifferences(T, a, b, &differences) catch return TestingError.FailureWhileTesting;
+        defer differences.deinit();
+        getSliceDifferences(T, a, b, &differences) catch return TestingError.FailureWhileTesting;
 
-        println(TEST_FAIL_FMT ++ "Splices not equal.\n\tExpected: {s}\n\tActual:   {s}", .{ label, expected_string, actual_string });
+        printerr("Slices not equal.\n\tExpected: {s}\n\tActual:   {s}", .{ label, expected_string, actual_string });
+
+        var differencesToString = std.ArrayList(u8).init(allocator);
+        defer differencesToString.deinit();
+        differencesToString.appendSlice("Differences found within slices.") catch return TestingError.FailureWhileTesting;
+        for (differences.items) |*difference| difference.outAfterList(&differencesToString) catch return TestingError.FailureWhileTesting;
+
+        println("{s}", .{differencesToString.items});
 
         return TestingError.AssertionError;
     }
 }
 
-const Difference = struct { index: usize, expected_value: ?u8, actual_value: ?u8 };
+const Difference = struct {
+    index: u8,
+    expected_value: ?u8,
+    actual_value: ?u8,
 
-fn getSpliceDifferences(comptime T: type, a: []const T, b: []const T, differences: *std.ArrayList(Difference)) !void {
+    fn outAfterList(self: *Difference, list: *std.ArrayList(u8)) !void {
+        var expected_out = std.ArrayList(u8).init(allocator);
+        defer expected_out.deinit();
+        var actual_out = std.ArrayList(u8).init(allocator);
+        defer actual_out.deinit();
+
+        if (self.expected_value == null)
+            try expected_out.appendSlice("{empty}")
+        else
+            try expected_out.append(self.expected_value.?);
+
+        if (self.actual_value == null)
+            try actual_out.appendSlice("{empty}")
+        else
+            try actual_out.append(self.actual_value.?);
+
+        try std.fmt.format(list.writer(), "\n\tDifference at index: {d}, expected '{s}', got '{s}'.", .{ self.index, expected_out.items, actual_out.items });
+    }
+};
+
+fn getSliceDifferences(comptime T: type, a: []const T, b: []const T, differences: *std.ArrayList(Difference)) !void {
     const maxLength = if (a.len > b.len) a.len else b.len;
 
     for (0..maxLength) |i| {
-        const potentialDifference: Difference = Difference{ .index = i, .expected_value = if (i < a.len) a[i] else null, .actual_value = if (i < b.len) b[i] else null };
+        const potentialDifference: Difference = Difference{ .index = @intCast(i), .expected_value = if (i < a.len) a[i] else null, .actual_value = if (i < b.len) b[i] else null };
 
         if (!std.meta.eql(potentialDifference.expected_value, potentialDifference.actual_value))
             try differences.append(potentialDifference);
@@ -127,5 +159,5 @@ test "assertEquals_slice" {
     try y.appendSlice(yar);
     //try y.appendSlice("ld!");
 
-    try assertEquals(x, y.items, "Splices test");
+    try assertEquals(x, y.items, "Slices test");
 }
