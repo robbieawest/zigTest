@@ -6,14 +6,14 @@ pub fn build(b: *std.Build) void {
 
     const zigTestLib = b.addStaticLibrary(.{
         .name = "zigTest",
-        .root_source_file = b.path("src/assertions.zig"),
+        .root_source_file = b.path("./zigTest/src/assertions.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const demoExe = b.addExecutable(.{
         .name = "demo",
-        .root_source_file = b.path("./src/demo.zig"),
+        .root_source_file = b.path("./zigTest/demo.zig"),
         .target = target,
         .optimize = optimize,
     });
